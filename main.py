@@ -91,19 +91,19 @@ def home():
 def test():
     return {"status": "ok"}
 
-@app.get("/hospital-labels")
-def get_hospital_labels():
+@app.get("/hospital-model-info")
+def hospital_model_info():
     try:
-        return {
-            "age_group": age_group_encoder.classes_.tolist(),
-            "bmi_category": bmi_category_encoder.classes_.tolist(),
-            "city": city_encoder.classes_.tolist(),
-            "distance_category": distance_category_encoder.classes_.tolist(),
-            "hospitalization_burden": hospitalization_burden_encoder.classes_.tolist()
+        info = {
+            "n_features_in": int(hospital_model.n_features_in_)
         }
+
+        if hasattr(hospital_model, "feature_names_in_"):
+            info["feature_names_in"] = hospital_model.feature_names_in_.tolist()
+
+        return info
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # =========================================================
 # HOSPITAL RECOMMENDATION ENDPOINT
