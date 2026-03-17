@@ -152,19 +152,34 @@ def predict_patient_risk(data: PatientRiskInput):
 
 @app.post("/predict-ambulance-dispatch")
 def predict_ambulance_dispatch(data: AmbulanceDispatchInput):
+    try:
+        input_df = pd.DataFrame([{
+            "Emergency_Level": emergency_level_encoder.transform([data.emergency_level])[0],
+            "Equipment_Level": equipment_level_encoder.transform([data.equipment_level])[0],
+            "Gender": gender_encoder.transform([data.gender])[0],
+            "Road_Type": road_type_encoder.transform([data.road_type])[0],
+            "Symptom_Category": symptom_category_encoder.transform([data.symptom_category])[0],
+            "Traffic_Level": traffic_level_encoder.transform([data.traffic_level])[0],
+            "Weather_Condition": weather_condition_encoder.transform([data.weather_condition])[0],
+            "Zone": zone_encoder.transform([data.zone])[0]
+        }])
 
-    input_df = pd.DataFrame([{
-        "Emergency_Level": emergency_level_encoder.transform([data.emergency_level])[0],
-        "Equipment_Level": equipment_level_encoder.transform([data.equipment_level])[0],
-        "Gender": gender_encoder.transform([data.gender])[0],
-        "Road_Type": road_type_encoder.transform([data.road_type])[0],
-        "Symptom_Category": symptom_category_encoder.transform([data.symptom_category])[0],
-        "Traffic_Level": traffic_level_encoder.transform([data.traffic_level])[0],
-        "Weather_Condition": weather_condition_encoder.transform([data.weather_condition])[0],
-        "Zone": zone_encoder.transform([data.zone])[0]
-    }])
+        prediction = ambulance_model.predict(input_df)
 
-    prediction = ambulance_model.predict(input_df)
-    dispatch_label = dispatch_priority_encoder.inverse_transform(prediction)[0]
+        try:
+            dispatch_label = dispatch_priority_encoder.inverse_transform(prediction)[0]
+        except Exception:
+            dispatch_label = prediction[0]
 
-    return {"dispatch_priority": dispatch_label}
+        response = {
+            "dispatch_priority": str(dispatch_label)
+        }
+
+        if hasattr(ambulance_model, "predict_proba"):
+            probabilities = ambulance_model.predict_proba(input_df)[0]
+            response["confidence"] = round(float(max(probabilities) * 100), 2)
+
+        return response
+
+    except Exception as e:
+        return {"error": str(e)}
