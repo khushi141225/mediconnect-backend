@@ -1,64 +1,58 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+import pandas as pd
+import numpy as np
 import joblib
-import traceback
+import os
+import xgboost  # required for loading xgboost model
 
-app = FastAPI(
-    title="MediConnect Backend",
-    version="1.0.0"
-)
+app = FastAPI(title="MediConnect Backend API", version="1.0.0")
 
-# =========================================================
-# LOAD MODELS
-# =========================================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODELS_DIR = os.path.join(BASE_DIR, "models")
+
+
+def load_model(file_name):
+    path = os.path.join(MODELS_DIR, file_name)
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Missing file: {path}")
+    return joblib.load(path)
+
+
+# ---------------- LOAD MODELS ----------------
 try:
-    # Hospital model files
-    hospital_model = joblib.load("models/hospital_recommendation_model.pkl")
-    age_group_encoder = joblib.load("models/Age_Group_encoder.pkl")
-    bmi_category_encoder = joblib.load("models/BMI_Category_encoder.pkl")
-    city_encoder = joblib.load("models/City_encoder.pkl")
-    distance_category_encoder = joblib.load("models/Distance_Category_encoder.pkl")
-    hospitalization_burden_encoder = joblib.load("models/Hospitalization_Burden_encoder.pkl")
-
-    print("✅ Hospital model files loaded successfully")
-
+    hospital_model = load_model("hospital_recommendation_model.pkl")
+    print("✅ Hospital model loaded")
 except Exception as e:
-    print("❌ Hospital model loading error:", str(e))
-    hospital_model = None
-    age_group_encoder = None
-    bmi_category_encoder = None
-    city_encoder = None
-    distance_category_encoder = None
-    hospitalization_burden_encoder = None
+    print("❌ Hospital model error:", e)
+    raise
 
 try:
-    # Patient model files
-    patient_model = joblib.load("models/patient_risk_best_model.pkl")
-    gender_encoder = joblib.load("models/Gender_encoder.pkl")
-    symptom_category_encoder = joblib.load("models/Symptom_Category_encoder.pkl")
-    patient_scaler = joblib.load("models/patient_risk_scaler.pkl")
-    risk_level_encoder = joblib.load("models/risk_level_encoder.pkl")
-
-    print("✅ Patient model files loaded successfully")
-
+    patient_model = load_model("patient_risk_best_model.pkl")
+    gender_encoder = load_model("Gender_encoder.pkl")
+    symptom_category_encoder = load_model("Symptom_Category_encoder.pkl")
+    age_group_encoder = load_model("Age_Group_encoder.pkl")
+    bmi_category_encoder = load_model("BMI_Category_encoder.pkl")
+    hospitalization_burden_encoder = load_model("Hospitalization_Burden_encoder.pkl")
+    patient_scaler = load_model("patient_risk_scaler.pkl")
+    risk_level_encoder = load_model("risk_level_encoder.pkl")
+    print("✅ Patient model loaded")
 except Exception as e:
-    print("❌ Patient model loading error:", str(e))
-    patient_model = None
-    gender_encoder = None
-    symptom_category_encoder = None
-    patient_scaler = None
-    risk_level_encoder = None
+    print("❌ Patient model error:", e)
+    raise
 
 
-# =========================================================
-# INPUT SCHEMAS
-# =========================================================
+# ---------------- INPUT SCHEMAS ----------------
 class HospitalInput(BaseModel):
-    age_group: str
-    bmi_category: str
-    city: str
-    distance_category: str
-    hospitalization_burden: str
+    icu_beds: int
+    ventilators: int
+    doctors_total: int
+    distance_km: float
+    ambulance_count: int
+    total_beds: int
+    hospital_type: int
+    specialization_available: int
+    emergency_services: int
 
 
 class PatientRiskInput(BaseModel):
@@ -66,7 +60,7 @@ class PatientRiskInput(BaseModel):
     gender: str
     bmi: float
     oxygen_level: float
-    respiratory_rate: float
+    respiratory_rate: int
     diabetes: int
     hypertension: int
     heart_disease: int
@@ -80,134 +74,244 @@ class PatientRiskInput(BaseModel):
     symptoms_severity: str
 
 
-# =========================================================
-# BASIC ROUTES
-# =========================================================
+# ---------------- HELPERS ----------------
+def safe_transform(encoder, value, field_name):
+    try:
+        return encoder.transform([value])[0]
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid {field_name}: {value}. Allowed: {list(encoder.classes_)}"
+        )
+
+
+def safe_decode(encoder, value):
+    try:
+        return encoder.inverse_transform([int(value)])[0]
+    except Exception:
+        return str(value)
+
+
+def get_age_group(age: int) -> str:
+    if age < 18:
+        return "Child"
+    elif age < 35:
+        return "Young Adult"
+    elif age < 50:
+        return "Adult"
+    elif age < 65:
+        return "Middle Aged"
+    else:
+        return "Senior"
+
+
+def get_bmi_category(bmi: float) -> str:
+    if bmi < 18.5:
+        return "Underweight"
+    elif bmi < 25:
+        return "Normal"
+    elif bmi < 30:
+        return "Overweight"
+    else:
+        return "Obese"
+
+
+def get_fever(temp: float) -> int:
+    return 1 if temp >= 100.4 else 0
+
+
+def get_low_oxygen(o2: float) -> int:
+    return 1 if o2 < 95 else 0
+
+
+def get_high_bp(bp: float) -> int:
+    return 1 if bp >= 140 else 0
+
+
+def get_high_hr(hr: float) -> int:
+    return 1 if hr >= 100 else 0
+
+
+def get_comorbidity(d: int, h: int, hd: int) -> int:
+    return int(d) + int(h) + int(hd)
+
+
+def get_lifestyle(sm: int, al: int) -> int:
+    return int(sm) + int(al)
+
+
+def get_vital_score(lo: int, bp: int, hr: int, fever: int) -> int:
+    return int(lo) + int(bp) + int(hr) + int(fever)
+
+
+def get_hospitalization_burden(ph: int) -> str:
+    if ph == 0:
+        return "Low"
+    elif ph <= 2:
+        return "Moderate"
+    else:
+        return "High"
+
+
+def get_symptom_category(s: str) -> str:
+    s = str(s).strip().lower()
+    if s in ["mild", "low"]:
+        return "Mild"
+    elif s in ["moderate", "medium"]:
+        return "Moderate"
+    else:
+        return "Severe"
+
+
+# ---------------- ROUTES ----------------
 @app.get("/")
 def home():
     return {"message": "Backend running"}
 
-@app.get("/test")
-def test():
-    return {"status": "ok"}
 
-@app.get("/hospital-model-info")
-def hospital_model_info():
-    try:
-        info = {
-            "n_features_in": int(hospital_model.n_features_in_)
-        }
+@app.get("/debug/patient-features")
+def debug_patient_features():
+    return {
+        "scaler_features": list(patient_scaler.feature_names_in_) if hasattr(patient_scaler, "feature_names_in_") else [],
+        "model_features": list(patient_model.feature_names_in_) if hasattr(patient_model, "feature_names_in_") else [],
+        "gender_classes": list(gender_encoder.classes_),
+        "symptom_classes": list(symptom_category_encoder.classes_),
+        "age_group_classes": list(age_group_encoder.classes_),
+        "bmi_category_classes": list(bmi_category_encoder.classes_),
+        "hospitalization_burden_classes": list(hospitalization_burden_encoder.classes_)
+    }
 
-        if hasattr(hospital_model, "feature_names_in_"):
-            info["feature_names_in"] = hospital_model.feature_names_in_.tolist()
 
-        return info
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# =========================================================
-# HOSPITAL RECOMMENDATION ENDPOINT
-# =========================================================
-@app.post("/predict")
+@app.post("/predict-hospital")
 def predict_hospital(data: HospitalInput):
     try:
-        if hospital_model is None:
-            raise Exception("Hospital model files not loaded properly")
+        icu_ratio = data.icu_beds / data.total_beds if data.total_beds else 0
+        ventilator_ratio = data.ventilators / data.total_beds if data.total_beds else 0
 
-        print("===== NEW HOSPITAL REQUEST =====")
-        print("Raw input:", data.model_dump())
+        df = pd.DataFrame([{
+            "icu_beds": data.icu_beds,
+            "ventilators": data.ventilators,
+            "doctors_total": data.doctors_total,
+            "distance_km": data.distance_km,
+            "ambulance_count": data.ambulance_count,
+            "total_beds": data.total_beds,
+            "hospital_type": data.hospital_type,
+            "specialization_available": data.specialization_available,
+            "emergency_services": data.emergency_services,
+            "icu_ratio": icu_ratio,
+            "ventilator_ratio": ventilator_ratio
+        }])
 
-        age_group_encoded = age_group_encoder.transform([data.age_group])[0]
-        bmi_category_encoded = bmi_category_encoder.transform([data.bmi_category])[0]
-        city_encoded = city_encoder.transform([data.city])[0]
-        distance_category_encoded = distance_category_encoder.transform([data.distance_category])[0]
-        hospitalization_burden_encoded = hospitalization_burden_encoder.transform([data.hospitalization_burden])[0]
+        pred = hospital_model.predict(df)[0]
 
-        print("Age Group encoded:", age_group_encoded)
-        print("BMI Category encoded:", bmi_category_encoded)
-        print("City encoded:", city_encoded)
-        print("Distance Category encoded:", distance_category_encoded)
-        print("Hospitalization Burden encoded:", hospitalization_burden_encoded)
-
-        features = [[
-            age_group_encoded,
-            bmi_category_encoded,
-            city_encoded,
-            distance_category_encoded,
-            hospitalization_burden_encoded
-        ]]
-
-        print("Hospital features:", features)
-
-        prediction = hospital_model.predict(features)
-        print("Hospital raw prediction:", prediction)
-
-        return {
-            "recommended_hospital": str(prediction[0]),
-            "status": "success"
+        result = {
+            "prediction": int(pred) if isinstance(pred, (int, np.integer)) else str(pred)
         }
 
-    except Exception:
-        error_text = traceback.format_exc()
-        print("❌ FULL HOSPITAL PREDICTION ERROR:\n", error_text)
-        raise HTTPException(status_code=500, detail=error_text)
+        if hasattr(hospital_model, "predict_proba"):
+            try:
+                result["probabilities"] = [float(x) for x in hospital_model.predict_proba(df)[0]]
+            except Exception:
+                pass
+
+        return result
+
+    except Exception as e:
+        print("HOSPITAL ERROR:", e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-# =========================================================
-# PATIENT RISK PREDICTION ENDPOINT
-# =========================================================
 @app.post("/predict-patient-risk")
 def predict_patient_risk(data: PatientRiskInput):
     try:
-        if patient_model is None:
-            raise Exception("Patient model files not loaded properly")
+        # -------- derived labels --------
+        age_group_label = get_age_group(data.age)
+        bmi_cat_label = get_bmi_category(data.bmi)
+        hosp_label = get_hospitalization_burden(data.previous_hospitalizations)
+        symptom_label = get_symptom_category(data.symptoms_severity)
 
-        print("===== NEW PATIENT REQUEST =====")
-        print("Raw input:", data.model_dump())
+        # -------- derived numeric features --------
+        fever = get_fever(data.body_temperature)
+        low_o2 = get_low_oxygen(data.oxygen_level)
+        high_bp = get_high_bp(data.blood_pressure)
+        high_hr = get_high_hr(data.heart_rate)
+        comorb = get_comorbidity(data.diabetes, data.hypertension, data.heart_disease)
+        life = get_lifestyle(data.smoking, data.alcohol_use)
+        vital = get_vital_score(low_o2, high_bp, high_hr, fever)
 
-        gender_encoded = gender_encoder.transform([data.gender])[0]
-        print("Gender encoded:", gender_encoded)
+        # -------- encodings --------
+        gender = safe_transform(gender_encoder, data.gender, "gender")
+        age_group = safe_transform(age_group_encoder, age_group_label, "age_group")
+        bmi_cat = safe_transform(bmi_category_encoder, bmi_cat_label, "bmi_category")
+        hosp = safe_transform(hospitalization_burden_encoder, hosp_label, "hospitalization_burden")
+        symptom = safe_transform(symptom_category_encoder, symptom_label, "symptom_category")
 
-        symptom_encoded = symptom_category_encoder.transform([data.symptoms_severity])[0]
-        print("Symptom severity encoded:", symptom_encoded)
-
-        # Feature order must match training order exactly
-        features = [[
-            data.age,
-            gender_encoded,
-            data.bmi,
-            data.oxygen_level,
-            data.respiratory_rate,
-            data.diabetes,
-            data.hypertension,
-            data.heart_disease,
-            data.smoking,
-            data.alcohol_use,
-            data.blood_pressure,
-            data.heart_rate,
-            data.body_temperature,
-            data.glucose_level,
-            data.previous_hospitalizations,
-            symptom_encoded
-        ]]
-
-        print("Patient features before scaling:", features)
-
-        scaled_features = patient_scaler.transform(features)
-        print("Scaled features:", scaled_features)
-
-        prediction = patient_model.predict(scaled_features)
-        print("Patient raw prediction:", prediction)
-
-        result = risk_level_encoder.inverse_transform(prediction)
-        print("Decoded result:", result)
-
-        return {
-            "prediction": str(result[0]),
-            "status": "success"
+        # -------- master row --------
+        # Include BOTH Symptom_Category and Symptoms_Severity to avoid mismatch
+        row = {
+            "Age": data.age,
+            "Gender": gender,
+            "BMI": data.bmi,
+            "Oxygen_Level": data.oxygen_level,
+            "Respiratory_Rate": data.respiratory_rate,
+            "Diabetes": data.diabetes,
+            "Hypertension": data.hypertension,
+            "Heart_Disease": data.heart_disease,
+            "Smoking": data.smoking,
+            "Alcohol_Use": data.alcohol_use,
+            "Blood_Pressure": data.blood_pressure,
+            "Heart_Rate": data.heart_rate,
+            "Body_Temperature": data.body_temperature,
+            "Glucose_Level": data.glucose_level,
+            "Previous_Hospitalizations": data.previous_hospitalizations,
+            "Age_Group": age_group,
+            "BMI_Category": bmi_cat,
+            "Fever": fever,
+            "Low_Oxygen": low_o2,
+            "High_BP": high_bp,
+            "High_Heart_Rate": high_hr,
+            "Comorbidity_Count": comorb,
+            "Lifestyle_Risk": life,
+            "Vital_Instability_Score": vital,
+            "Hospitalization_Burden": hosp,
+            "Symptom_Category": symptom,
+            "Symptoms_Severity": symptom
         }
 
-    except Exception:
-        error_text = traceback.format_exc()
-        print("❌ FULL PATIENT PREDICTION ERROR:\n", error_text)
-        raise HTTPException(status_code=500, detail=error_text)
+        df = pd.DataFrame([row])
+
+        # -------- align to scaler features --------
+        if hasattr(patient_scaler, "feature_names_in_"):
+            expected_cols = list(patient_scaler.feature_names_in_)
+
+            # Add any still-missing expected columns with safe default 0
+            for col in expected_cols:
+                if col not in df.columns:
+                    df[col] = 0
+
+            df = df[expected_cols]
+
+        print("\nPATIENT DF COLUMNS:", list(df.columns))
+        print(df)
+
+        scaled = patient_scaler.transform(df)
+        pred = patient_model.predict(scaled)[0]
+
+        result = {
+            "prediction": safe_decode(risk_level_encoder, pred),
+            "encoded_prediction": int(pred) if isinstance(pred, (int, np.integer)) else str(pred)
+        }
+
+        if hasattr(patient_model, "predict_proba"):
+            try:
+                result["probabilities"] = [float(x) for x in patient_model.predict_proba(scaled)[0]]
+            except Exception:
+                pass
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print("PATIENT ERROR:", e)
+        raise HTTPException(status_code=500, detail=str(e))
