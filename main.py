@@ -31,7 +31,7 @@ hospitalization_burden_encoder = joblib.load("models/Hospitalization_Burden_enco
 patient_model = joblib.load("models/patient_risk_best_model.pkl")
 gender_encoder = joblib.load("models/Gender_encoder.pkl")
 symptom_category_encoder = joblib.load("models/Symptom_Category_encoder.pkl")
-patient_scaler = joblib.load("models/Patient_risk_scaler.pkl")
+patient_scaler = joblib.load("models/patient_risk_scaler.pkl")
 risk_level_encoder = joblib.load("models/Patient_Risk_Level_encoder.pkl")
 
 ambulance_model = joblib.load("models/ambulance_dispatch_model.pkl")
