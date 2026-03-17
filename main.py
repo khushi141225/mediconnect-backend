@@ -366,7 +366,17 @@ def predict_patient_risk(data: PatientRiskInput):
 @app.post("/predict-ambulance-dispatch")
 def predict_ambulance_dispatch(data: AmbulanceDispatchInput):
     try:
-        processed_input = preprocess_ambulance_input(data)
+        processed_input = pd.DataFrame([{
+            "Emergency_Level": emergency_level_encoder.transform([data.emergency_level])[0],
+            "Equipment_Level": equipment_level_encoder.transform([data.equipment_level])[0],
+            "Gender": gender_encoder.transform([data.gender])[0],
+            "Road_Type": road_type_encoder.transform([data.road_type])[0],
+            "Symptom_Category": symptom_category_encoder.transform([data.symptom_category])[0],
+            "Traffic_Level": traffic_level_encoder.transform([data.traffic_level])[0],
+            "Weather_Condition": weather_condition_encoder.transform([data.weather_condition])[0],
+            "Zone": zone_encoder.transform([data.zone])[0]
+        }])
+
         prediction = ambulance_model.predict(processed_input)
 
         try:
@@ -374,28 +384,13 @@ def predict_ambulance_dispatch(data: AmbulanceDispatchInput):
         except Exception:
             dispatch_label = prediction[0]
 
-        response = {
-            "dispatch_priority": str(dispatch_label)
-        }
+        response = {"dispatch_priority": str(dispatch_label)}
 
-        confidence = safe_predict_proba(ambulance_model, processed_input)
-        if confidence is not None:
-            response["confidence"] = confidence
-
-        dispatch_text = str(dispatch_label).lower()
-
-        if dispatch_text in ["high", "critical", "priority_1", "p1"]:
-            response["recommendation"] = "Dispatch nearest ambulance immediately."
-        elif dispatch_text in ["medium", "priority_2", "p2"]:
-            response["recommendation"] = "Dispatch ambulance with moderate urgency."
-        elif dispatch_text in ["low", "priority_3", "p3"]:
-            response["recommendation"] = "Schedule standard ambulance response."
-        else:
-            response["recommendation"] = "Dispatch decision generated successfully."
+        if hasattr(ambulance_model, "predict_proba"):
+            probabilities = ambulance_model.predict_proba(processed_input)[0]
+            response["confidence"] = round(float(max(probabilities) * 100), 2)
 
         return response
 
-    except ValueError as e:
-        return {"error": str(e)}
     except Exception as e:
         return {"error": str(e)}
