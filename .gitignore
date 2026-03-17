@@ -2,4 +2,4 @@ __pycache__/
 *.pyc
 .venv/
 env/
-models/ambulance_dispatch_model.pkl
+
