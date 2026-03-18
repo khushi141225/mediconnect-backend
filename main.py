@@ -41,6 +41,13 @@ except Exception as e:
     print("❌ Patient model error:", e)
     raise
 
+try:
+    ambulance_model = load_model("ambulance_dispatch_model.pkl")
+    print("✅ Ambulance model loaded")
+except Exception as e:
+    print("❌ Ambulance model error:", e)
+    raise
+
 
 # ---------------- INPUT SCHEMAS ----------------
 class HospitalInput(BaseModel):
@@ -72,6 +79,17 @@ class PatientRiskInput(BaseModel):
     glucose_level: float
     previous_hospitalizations: int
     symptoms_severity: str
+
+
+class AmbulanceInput(BaseModel):
+    distance_km: float
+    traffic_congestion_level: int
+    weather_condition: int
+    patient_severity: int
+    ambulance_availability: int
+    hospital_capacity: int
+    road_condition: int
+    emergency_type: int
 
 
 # ---------------- HELPERS ----------------
@@ -224,13 +242,11 @@ def predict_hospital(data: HospitalInput):
 @app.post("/predict-patient-risk")
 def predict_patient_risk(data: PatientRiskInput):
     try:
-        # -------- derived labels --------
         age_group_label = get_age_group(data.age)
         bmi_cat_label = get_bmi_category(data.bmi)
         hosp_label = get_hospitalization_burden(data.previous_hospitalizations)
         symptom_label = get_symptom_category(data.symptoms_severity)
 
-        # -------- derived numeric features --------
         fever = get_fever(data.body_temperature)
         low_o2 = get_low_oxygen(data.oxygen_level)
         high_bp = get_high_bp(data.blood_pressure)
@@ -239,15 +255,12 @@ def predict_patient_risk(data: PatientRiskInput):
         life = get_lifestyle(data.smoking, data.alcohol_use)
         vital = get_vital_score(low_o2, high_bp, high_hr, fever)
 
-        # -------- encodings --------
         gender = safe_transform(gender_encoder, data.gender, "gender")
         age_group = safe_transform(age_group_encoder, age_group_label, "age_group")
         bmi_cat = safe_transform(bmi_category_encoder, bmi_cat_label, "bmi_category")
         hosp = safe_transform(hospitalization_burden_encoder, hosp_label, "hospitalization_burden")
         symptom = safe_transform(symptom_category_encoder, symptom_label, "symptom_category")
 
-        # -------- master row --------
-        # Include BOTH Symptom_Category and Symptoms_Severity to avoid mismatch
         row = {
             "Age": data.age,
             "Gender": gender,
@@ -280,11 +293,9 @@ def predict_patient_risk(data: PatientRiskInput):
 
         df = pd.DataFrame([row])
 
-        # -------- align to scaler features --------
         if hasattr(patient_scaler, "feature_names_in_"):
             expected_cols = list(patient_scaler.feature_names_in_)
 
-            # Add any still-missing expected columns with safe default 0
             for col in expected_cols:
                 if col not in df.columns:
                     df[col] = 0
@@ -314,4 +325,39 @@ def predict_patient_risk(data: PatientRiskInput):
         raise
     except Exception as e:
         print("PATIENT ERROR:", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/predict-ambulance")
+def predict_ambulance(data: AmbulanceInput):
+    try:
+        df = pd.DataFrame([{
+            "distance_km": data.distance_km,
+            "traffic_congestion_level": data.traffic_congestion_level,
+            "weather_condition": data.weather_condition,
+            "patient_severity": data.patient_severity,
+            "ambulance_availability": data.ambulance_availability,
+            "hospital_capacity": data.hospital_capacity,
+            "road_condition": data.road_condition,
+            "emergency_type": data.emergency_type
+        }])
+
+        if hasattr(ambulance_model, "feature_names_in_"):
+            expected_cols = list(ambulance_model.feature_names_in_)
+            for col in expected_cols:
+                if col not in df.columns:
+                    df[col] = 0
+            df = df[expected_cols]
+
+        print("\nAMBULANCE DF COLUMNS:", list(df.columns))
+        print(df)
+
+        pred = ambulance_model.predict(df)[0]
+
+        return {
+            "predicted_response_time": float(pred)
+        }
+
+    except Exception as e:
+        print("AMBULANCE ERROR:", e)
         raise HTTPException(status_code=500, detail=str(e))
